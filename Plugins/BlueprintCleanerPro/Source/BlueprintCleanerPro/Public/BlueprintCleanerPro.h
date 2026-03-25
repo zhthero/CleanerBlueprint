@@ -6,6 +6,8 @@
 
 class FToolBarBuilder;
 class FMenuBuilder;
+class SDockTab;
+class SMultiLineEditableTextBox;
 
 class FBlueprintCleanerProModule : public IModuleInterface
 {
@@ -15,14 +17,16 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 	
-	/** This function will be bound to Command. */
-	void PluginButtonClicked();
-	
 private:
+    void PluginButtonClicked();
+    TSharedRef<SDockTab> OnSpawnPluginTab(const class FSpawnTabArgs& SpawnTabArgs);
 
-	void RegisterMenus();
-
+    void RegisterMenus();
+    FString BuildReportText() const;
+    void RefreshReportWidget();
 
 private:
-	TSharedPtr<class FUICommandList> PluginCommands;
+    TSharedPtr<class FUICommandList> PluginCommands;
+    TSharedPtr<SMultiLineEditableTextBox> ReportTextBox;
+    FString CachedReportText;
 };

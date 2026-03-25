@@ -14,6 +14,14 @@
 #include "UObject/UObjectIterator.h"
 #include "BlueprintEditor.h"
 #include "Engine/Blueprint.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "LevelEditor.h"
+#include "Engine/Blueprint.h"
 
 #include "BlueprintCleanerScanner.h"
 #include "BlueprintCleanerEditorUtils.h"
@@ -39,7 +47,17 @@ void FBlueprintCleanerProModule::StartupModule()
 		FExecuteAction::CreateRaw(this, &FBlueprintCleanerProModule::PluginButtonClicked),
 		FCanExecuteAction());
 
-	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FBlueprintCleanerProModule::RegisterMenus));
+    FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+        BlueprintCleanerProTabName,
+        FOnSpawnTab::CreateRaw(this, &FBlueprintCleanerProModule::OnSpawnPluginTab))
+        .SetDisplayName(FText::FromString("Blueprint Cleaner Pro"))
+        .SetMenuType(ETabSpawnerMenuType::Hidden);
+
+    UToolMenus::RegisterStartupCallback(
+        FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FBlueprintCleanerProModule::RegisterMenus));
+
+    CachedReportText = TEXT("Blueprint Cleaner Pro Ready\n\n点击工具栏按钮开始扫描当前活跃蓝图。");
+
 }
 
 void FBlueprintCleanerProModule::ShutdownModule()
@@ -54,6 +72,7 @@ void FBlueprintCleanerProModule::ShutdownModule()
 	FBlueprintCleanerProStyle::Shutdown();
 
 	FBlueprintCleanerProCommands::Unregister();
+    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(BlueprintCleanerProTabName);
 }
 
 static const TCHAR* GraphTypeToString(EBCPGraphType GraphType)
@@ -73,52 +92,120 @@ static const TCHAR* GraphTypeToString(EBCPGraphType GraphType)
 
 void FBlueprintCleanerProModule::PluginButtonClicked()
 {
-	UBlueprint* Blueprint = BlueprintCleanerEditorUtils::GetMostRecentlyActivatedBlueprintEditorAsset();
+    UBlueprint* Blueprint = BlueprintCleanerEditorUtils::GetMostRecentlyActivatedBlueprintEditorAsset();
 
-	if (!Blueprint)
-	{
-		BlueprintCleanerEditorUtils::ShowNoActiveBlueprintDialog();
-		return;
-	}
+    if (!Blueprint)
+    {
+        BlueprintCleanerEditorUtils::ShowNoActiveBlueprintDialog();
+        return;
+    }
 
-	FBCPBlueprintSnapshot Snapshot;
-	if (!FBlueprintCleanerScanner::BuildSnapshot(Blueprint, Snapshot))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("BCP: Failed to build snapshot"));
-		return;
-	}
+    FBCPBlueprintSnapshot Snapshot;
+    if (!FBlueprintCleanerScanner::BuildSnapshot(Blueprint, Snapshot))
+    {
+        CachedReportText = TEXT("扫描失败：无法构建 Blueprint Snapshot。");
+        RefreshReportWidget();
+        FGlobalTabmanager::Get()->TryInvokeTab(BlueprintCleanerProTabName);
+        return;
+    }
 
-	TArray<FBCPSmellInfo> Smells;
-	FBlueprintCleanerSmellAnalyzer::AnalyzeLongExecutionChains(Snapshot, Smells, 8);
+    TArray<FBCPSmellInfo> Smells;
+    FBlueprintCleanerSmellAnalyzer::AnalyzeLongExecutionChains(Snapshot, Smells, 8);
 
-	UE_LOG(LogTemp, Warning, TEXT("=== Long Execution Chain Analysis ==="));
-	UE_LOG(LogTemp, Warning, TEXT("Blueprint: %s"), *Snapshot.BlueprintName);
-	UE_LOG(LogTemp, Warning, TEXT("Smell Count: %d"), Smells.Num());
+    FString Report;
+    Report += FString::Printf(TEXT("Blueprint: %s\n"), *Snapshot.BlueprintName);
+    Report += FString::Printf(TEXT("Graphs: %d\n"), Snapshot.Graphs.Num());
+    Report += FString::Printf(TEXT("Total Nodes: %d\n"), Snapshot.TotalNodeCount);
+    Report += FString::Printf(TEXT("Exec Nodes: %d\n"), Snapshot.TotalExecNodeCount);
+    Report += FString::Printf(TEXT("Smells: %d\n\n"), Smells.Num());
 
-	for (const FBCPSmellInfo& Smell : Smells)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[Smell] Graph=%s | Score=%d | %s"),
-			*Smell.GraphName,
-			Smell.Score,
-			*Smell.Message);
+    Report += TEXT("=== Graphs ===\n");
+    for (const FBCPGraphInfo& GraphInfo : Snapshot.Graphs)
+    {
+        const TCHAR* GraphTypeText = TEXT("Unknown");
 
-		for (const FString& NodeTitle : Smell.RelatedNodeTitles)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("  Related Node: %s"), *NodeTitle);
-		}
-	}
-	for (const FBCPGraphInfo& GraphInfo : Snapshot.Graphs)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Graph: %s"), *GraphInfo.GraphName);
+        switch (GraphInfo.GraphType)
+        {
+        case EBCPGraphType::EventGraph:
+            GraphTypeText = TEXT("EventGraph");
+            break;
+        case EBCPGraphType::Function:
+            GraphTypeText = TEXT("Function");
+            break;
+        case EBCPGraphType::Macro:
+            GraphTypeText = TEXT("Macro");
+            break;
+        default:
+            break;
+        }
 
-		for (const FBCPNodeInfo& NodeInfo : GraphInfo.Nodes)
-		{
-			if (NodeInfo.bIsExecEntryCandidate)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("  Entry Candidate: %s"), *NodeInfo.Title);
-			}
-		}
-	}
+        Report += FString::Printf(
+            TEXT("- %s | Type: %s | Nodes: %d\n"),
+            *GraphInfo.GraphName,
+            GraphTypeText,
+            GraphInfo.Nodes.Num());
+    }
+
+    Report += TEXT("\n=== Smells ===\n");
+    if (Smells.Num() == 0)
+    {
+        Report += TEXT("No smells detected.\n");
+    }
+    else
+    {
+        for (const FBCPSmellInfo& Smell : Smells)
+        {
+            const TCHAR* SmellTypeText = TEXT("Unknown");
+
+            switch (Smell.SmellType)
+            {
+            case EBCPSmellType::LongExecutionChain:
+                SmellTypeText = TEXT("LongExecutionChain");
+                break;
+            default:
+                break;
+            }
+
+            Report += FString::Printf(
+                TEXT("[%s]\nGraph: %s\nScore: %d\nMessage: %s\n"),
+                SmellTypeText,
+                *Smell.GraphName,
+                Smell.Score,
+                *Smell.Message);
+
+            if (Smell.RelatedNodeTitles.Num() > 0)
+            {
+                Report += TEXT("Related Nodes:\n");
+                for (const FString& NodeTitle : Smell.RelatedNodeTitles)
+                {
+                    Report += FString::Printf(TEXT("  - %s\n"), *NodeTitle);
+                }
+            }
+
+            Report += TEXT("\n");
+        }
+    }
+
+    CachedReportText = MoveTemp(Report);
+    FGlobalTabmanager::Get()->TryInvokeTab(BlueprintCleanerProTabName);
+    RefreshReportWidget();
+}
+
+TSharedRef<SDockTab> FBlueprintCleanerProModule::OnSpawnPluginTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+	return SNew(SDockTab)
+		.TabRole(ETabRole::NomadTab)
+		[
+			SNew(SBorder)
+				.Padding(8.0f)
+				[
+					SAssignNew(ReportTextBox, SMultiLineEditableTextBox)
+						.IsReadOnly(true)
+						.Text(FText::FromString(CachedReportText.IsEmpty()
+							? TEXT("Blueprint Cleaner Pro Ready\n\n点击工具栏按钮开始扫描当前活跃蓝图。")
+							: CachedReportText))
+				]
+		];
 }
 
 void FBlueprintCleanerProModule::RegisterMenus()
@@ -143,6 +230,19 @@ void FBlueprintCleanerProModule::RegisterMenus()
 				Entry.SetCommandList(PluginCommands);
 			}
 		}
+	}
+}
+
+FString FBlueprintCleanerProModule::BuildReportText() const
+{
+	return CachedReportText;
+}
+
+void FBlueprintCleanerProModule::RefreshReportWidget()
+{
+	if (ReportTextBox.IsValid())
+	{
+		ReportTextBox->SetText(FText::FromString(CachedReportText));
 	}
 }
 
