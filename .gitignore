@@ -1,0 +1,15 @@
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+.vs/
+*.VC.db
+.DS_Store
+
+*.log
+*.tmp
+*.obj
+*.pch
+
+Content/Developers/

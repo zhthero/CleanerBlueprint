@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{44AD575E-428F-E9EC-6453-9D92DE421B1E}",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "MyCleanerProject",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}
+	]
+}
